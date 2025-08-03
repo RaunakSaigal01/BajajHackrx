@@ -1,76 +1,58 @@
-import json
-import faiss
-import numpy as np
 import re
+import numpy as np
+import faiss
 from sentence_transformers import SentenceTransformer
 
-# Load model and FAISS index
+# Load the sentence-transformers model
 model = SentenceTransformer("all-MiniLM-L6-v2")
-index = faiss.read_index("faiss_index.index")
 
-# Load the chunks
-with open("chunks.txt", "r", encoding="utf-8") as f:
-    chunks = f.read().split("\n---\n")
+# Constants
+THRESHOLD = 1.0
+TOP_K = 3
 
-# Parameters
-THRESHOLD = 1.0  # L2 distance threshold
-TOP_K = 3        # top-k results to consider
+# Chunk policy document text using numbered patterns (e.g., 1.1, 2.2, Section 3)
+def improved_chunking(text):
+    pattern = r'(?=(?:\n|^)(?:Section|SECTION|Annexure|ANNEXURE)?\s?\d+(\.\d+)*[.:]?\s[A-Z])'
+    parts = re.split(pattern, text)
+    chunks = []
+    for part in parts:
+        if part and isinstance(part, str):
+            cleaned = part.strip().replace("\n", " ")
+            if len(cleaned) > 30:
+                chunks.append(cleaned)
+    return chunks
 
-def find_answer(query):
-    """Returns the best-matched clause from chunks for the given query, without leading numbering."""
-    query_embedding = model.encode([query], convert_to_numpy=True).astype("float32")
+# Build FAISS index from chunks
+def build_faiss_index(chunks):
+    embeddings = model.encode(chunks, convert_to_numpy=True).astype("float32")
+    dimension = embeddings.shape[1]
+    index = faiss.IndexFlatL2(dimension)
+    index.add(embeddings)
+    return index, embeddings
+
+# Core logic to find answer for a question from indexed chunks
+def find_answer(question, index, chunks):
+    query_embedding = model.encode([question], convert_to_numpy=True).astype("float32")
     D, I = index.search(query_embedding, k=TOP_K)
+    min_distance = np.min(D[0])
 
-    min_dist = np.min(D[0])
-
-    if min_dist > THRESHOLD:
+    if min_distance > THRESHOLD:
         return "Unclear: no relevant information found."
 
-    top_chunk = chunks[I[0][0]].strip()
+    best_chunk = chunks[I[0][0]].strip()
+    best_chunk = re.sub(r"^\d+(\.\d+)*\.?\s*", "", best_chunk)
+    lower_chunk = best_chunk.lower()
 
-    # Remove leading numbering like "3.56. " or "1. " etc.
-    top_chunk = re.sub(r"^\d+(\.\d+)*\.?\s*", "", top_chunk)
-
-    # Add smart logic based on the content of the top chunk
-    lower_chunk = top_chunk.lower()
+    # Smart decision logic
     if "not covered" in lower_chunk and "until" in lower_chunk:
-        return "Yes, covered after waiting period. " + top_chunk
+        return "Yes, covered after waiting period. " + best_chunk
     elif "not covered" in lower_chunk and "excluded" in lower_chunk:
-        return "No, permanently excluded. " + top_chunk
+        return "No, permanently excluded. " + best_chunk
     elif "not covered" in lower_chunk:
-        return "No, not covered. " + top_chunk
+        return "No, not covered. " + best_chunk
     elif "covered" in lower_chunk or "reimbursed" in lower_chunk or "included" in lower_chunk:
-        return "Yes, covered. " + top_chunk
+        return "Yes, covered. " + best_chunk
     elif "waiting period" in lower_chunk:
-        return "Waiting period details: " + top_chunk
+        return "Waiting period details: " + best_chunk
     else:
-        return "Unclear: " + top_chunk
-
-if __name__ == "__main__":
-    # Simulated API input format
-    input_payload = {
-        "documents": "https://hackrx.blob.core.windows.net/assets/policy.pdf",
-        "questions": [
-            "What is the grace period for premium payment under the National Policy?",
-            "What is the waiting period for pre-existing diseases (PED)?",
-            "Does this policy cover maternity expenses, and what are the conditions?",
-            "What is the waiting period for cataract surgery?",
-            "Are the medical expenses for an organ donor covered under this policy?",
-            "What is the No Claim Discount (NCD) offered in this policy?",
-            "Is there a benefit for preventive health check-ups?",
-            "How does the policy define a 'hospital'?",
-            "What is the extent of coverage for AYUSH treatments?",
-            "Are there any sub-limits on room rent and ICU charges for Plan A?"
-        ]
-    }
-
-    # Build response
-    response = {
-        "answers": []
-    }
-
-    for q in input_payload["questions"]:
-        response["answers"].append(find_answer(q))
-
-    print("\nStructured JSON Response:\n")
-    print(json.dumps(response, indent=2))
+        return "Unclear: " + best_chunk
