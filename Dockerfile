@@ -1,13 +1,21 @@
-# Build stage
-FROM node:18 as builder
-WORKDIR /app
-COPY . .
-RUN npm install && npm run build
+# Use a small Python base image
+FROM python:3.10-slim
 
-# Production stage
-FROM node:18-slim
+# Set a working directory in the container
 WORKDIR /app
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/package*.json ./
-RUN npm install --omit=dev
-CMD ["node", "dist/index.js"]
+
+# Copy only requirements first to leverage Docker layer caching
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the entire project into the container
+COPY . .
+
+# Expose port 8000 (or whichever your app uses)
+EXPOSE 5000
+
+# Command to run your app — adjust as needed!
+# Here assuming you run app.py with uvicorn, a common choice for FastAPI apps
+CMD ["python", "app.py"]
