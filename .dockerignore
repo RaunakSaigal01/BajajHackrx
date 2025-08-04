@@ -1,0 +1,7 @@
+__pycache__/
+*.npy
+*.index
+*.pdf
+*.txt
+.DS_Store
+.git
